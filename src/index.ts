@@ -193,7 +193,7 @@ async function handleApiSettings(request: Request, env: Env): Promise<Response> 
   if (request.method === "POST") {
     try {
       const body: any = await request.json();
-      const adminPass = env.ADMIN_PASS || "adpass";
+      const adminPass = env.ADMIN_PASS || "admin_password";
       if (body.password !== adminPass) {
         return new Response(
           JSON.stringify({ success: false, error: "Unauthorized" }),
@@ -1267,7 +1267,7 @@ function getFrontendHTML(): string {
 }
 
 function getAdminHTML(env: Env): string {
-  const adminPass = env.ADMIN_PASS || "adpass";
+  const adminPass = env.ADMIN_PASS || "admin_password";
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
