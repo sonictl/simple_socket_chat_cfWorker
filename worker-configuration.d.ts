@@ -2,4 +2,6 @@
 
 interface Env {
 	CHAT_ROOM: DurableObjectNamespace<import("./src/index").ChatRoom>;
+	CHAT_FILES: R2Bucket;
+	ADMIN_PASS?: string;
 }

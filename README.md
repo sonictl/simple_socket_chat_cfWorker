@@ -215,6 +215,19 @@ npm run dev
 # 访问 http://localhost:8787
 ```
 
+### 配置环境变量（Secret）
+
+Worker 使用环境变量来存储敏感信息（如管理员密码），通过 `wrangler secret` 命令设置：
+
+```bash
+# 设置管理员密码（用于访问 /admin 路由）
+npx wrangler secret put ADMIN_PASS
+```
+
+执行后会提示输入密码值，输入后按回车确认。例如输入 `adpass`。
+
+> **注意**：Secret 设置后立即生效，无需重新部署。如需更新密码，重新执行上述命令即可。
+
 ### 部署到生产环境
 
 ```bash
