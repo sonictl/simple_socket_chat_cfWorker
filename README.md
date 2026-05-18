@@ -2,8 +2,6 @@
 
 一个基于 **Cloudflare Workers + Durable Objects** 构建的实时 WebSocket 聊天室应用。支持在线人数统计、昵称持久化，适配桌面端和移动端。
 
-**在线体验:** [https://chat-app.marthis.workers.dev](https://chat-app.marthis.workers.dev)
-
 ---
 
 ## 📋 功能描述
