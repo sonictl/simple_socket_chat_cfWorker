@@ -1,6 +1,6 @@
 # 💬 Simple Socket Chat - Cloudflare Worker
 
-一个基于 **Cloudflare Workers + Durable Objects** 构建的实时 WebSocket 聊天室应用。支持多房间、在线人数统计、昵称持久化，适配桌面端和移动端。
+一个基于 **Cloudflare Workers + Durable Objects** 构建的实时 WebSocket 聊天室应用。支持在线人数统计、昵称持久化，适配桌面端和移动端。
 
 **在线体验:** [https://chat-app.marthis.workers.dev](https://chat-app.marthis.workers.dev)
 
@@ -9,7 +9,6 @@
 ## 📋 功能描述
 
 - **实时聊天** — 基于 WebSocket 的全双工通信，消息即时推送
-- **多房间支持** — 通过 URL 参数 `?room=房间名` 进入不同聊天室（默认 `global`）
 - **昵称系统** — 首次进入需输入昵称，自动保存到 `localStorage`，后续免输入
 - **在线人数** — 顶部实时显示当前房间在线人数
 - **多行消息** — 桌面端 Enter 发送 / Shift+Enter 换行，移动端 Enter 换行 / 按钮发送
@@ -51,8 +50,7 @@
 │              Cloudflare Workers (Worker 入口)             │
 │                                                         │
 │  1. 普通 HTTP 请求 → 返回前端 HTML 页面                   │
-│  2. WebSocket 升级请求 → 路由到对应的 Durable Object      │
-│     (根据 ?room=xxx 参数选择房间)                         │
+│  2. WebSocket 升级请求 → 路由到 Durable Object            │
 └─────────────────────────┬───────────────────────────────┘
                           │
                           ▼
@@ -79,7 +77,7 @@
 
 1. 用户访问 Worker URL → Worker 返回 HTML 页面
 2. 页面加载后，JavaScript 建立 WebSocket 连接（自动升级协议）
-3. Worker 检测到 WebSocket 升级请求 → 根据 `room` 参数路由到对应的 Durable Object 实例
+3. Worker 检测到 WebSocket 升级请求 → 路由到 Durable Object 实例
 4. Durable Object 接受连接，管理客户端集合
 5. 用户发送消息 → WebSocket → Durable Object → 广播给房间内其他用户
 6. 用户加入/离开 → Durable Object 更新人数并广播系统消息
