@@ -1,5 +1,5 @@
 {
-  "name": "chat-app",
+  "name": "simple-chat-app",
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
   "durable_objects": {

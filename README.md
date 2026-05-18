@@ -87,8 +87,8 @@
 ### 1. 创建 Worker 项目
 
 ```bash
-npm create cloudflare@latest chat-app
-cd chat-app
+npm create cloudflare@latest simple-chat-app
+cd simple-chat-app
 ```
 
 选择：
@@ -100,7 +100,7 @@ cd chat-app
 
 ```jsonc
 {
-  "name": "chat-app",
+  "name": "simple-chat-app",
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
   "durable_objects": {
@@ -223,7 +223,7 @@ npm run deploy
 
 部署成功后，终端会显示你的 Worker URL，例如：
 ```
-https://chat-app.mawefd.workers.dev
+https://simple-chat-app.mawefd.workers.dev
 ```
 
 ### 自定义域名（可选）
@@ -270,7 +270,7 @@ Cloudflare Workers 是一个**无服务器计算平台**，允许你在 Cloudfla
 ## 📁 项目结构
 
 ```
-chat-app/
+simple-chat-app/
 ├── src/
 │   └── index.ts          # Worker 入口 + Durable Object
 ├── public/
