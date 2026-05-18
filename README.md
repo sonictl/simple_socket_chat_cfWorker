@@ -91,6 +91,11 @@ npm create cloudflare@latest chat-app
 cd chat-app
 ```
 
+选择：
+ - Helloworld Example
+ - Worker + Durable Objects
+ - TypeScript（推荐）
+
 ### 2. 配置 wrangler.jsonc
 
 ```jsonc
@@ -218,12 +223,12 @@ npm run deploy
 
 部署成功后，终端会显示你的 Worker URL，例如：
 ```
-https://chat-app.marthis.workers.dev
+https://chat-app.mawefd.workers.dev
 ```
 
 ### 自定义域名（可选）
 
-在 Cloudflare Dashboard 中，进入 Workers & Pages → 你的 Worker → Triggers → Custom Domain，添加你的域名。
+在 Cloudflare Dashboard 中，进入 Workers & Pages → 你的 Worker → Domains，添加你的域名。
 
 ---
 
