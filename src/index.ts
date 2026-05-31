@@ -1,10 +1,99 @@
 export class ChatRoom {
   state: DurableObjectState;
   clients: Map<WebSocket, string>; // ws -> nickname
+  lastPong: Map<WebSocket, number>; // ws -> last pong timestamp
+  heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  messageHistory: Array<{ timestamp: number; data: object }>; // Recent message history
+
+  // Heartbeat configuration
+  static readonly HEARTBEAT_INTERVAL = 30000; // Send ping every 30 seconds
+  static readonly HEARTBEAT_TIMEOUT = 60000; // Consider dead if no pong in 60 seconds
+  static readonly MAX_HISTORY_SIZE = 50; // Keep last 50 messages
+  static readonly HISTORY_TTL = 10 * 60 * 1000; // Keep messages for 10 minutes
 
   constructor(state: DurableObjectState) {
     this.state = state;
     this.clients = new Map();
+    this.lastPong = new Map();
+    this.messageHistory = [];
+  }
+
+  // Add message to history
+  addToHistory(data: object) {
+    const now = Date.now();
+    this.messageHistory.push({ timestamp: now, data });
+
+    // Remove old messages (older than HISTORY_TTL or exceeding MAX_HISTORY_SIZE)
+    const cutoffTime = now - ChatRoom.HISTORY_TTL;
+    this.messageHistory = this.messageHistory
+      .filter(msg => msg.timestamp > cutoffTime)
+      .slice(-ChatRoom.MAX_HISTORY_SIZE);
+  }
+
+  // Get recent messages for a rejoining user
+  getRecentHistory(): object[] {
+    const now = Date.now();
+    const cutoffTime = now - ChatRoom.HISTORY_TTL;
+    return this.messageHistory
+      .filter(msg => msg.timestamp > cutoffTime)
+      .map(msg => msg.data);
+  }
+
+  startHeartbeat() {
+    if (this.heartbeatInterval) return;
+
+    this.heartbeatInterval = setInterval(() => {
+      const now = Date.now();
+      const deadConnections: WebSocket[] = [];
+
+      // Check for dead connections and send ping to alive ones
+      for (const [ws, lastTime] of this.lastPong.entries()) {
+        if (now - lastTime > ChatRoom.HEARTBEAT_TIMEOUT) {
+          // Connection is dead, mark for removal
+          deadConnections.push(ws);
+        } else {
+          // Send ping to alive connections
+          try {
+            ws.send(JSON.stringify({ type: "ping" }));
+          } catch {
+            deadConnections.push(ws);
+          }
+        }
+      }
+
+      // Clean up dead connections
+      for (const ws of deadConnections) {
+        const nickname = this.clients.get(ws) || "Anonymous";
+        this.clients.delete(ws);
+        this.lastPong.delete(ws);
+        try {
+          ws.close(1000, "Heartbeat timeout");
+        } catch {
+          // Ignore close errors
+        }
+        this.broadcast({
+          type: "system",
+          text: `${nickname} left the room (timeout)`,
+        });
+      }
+
+      // Broadcast updated count if any connections were removed
+      if (deadConnections.length > 0) {
+        this.broadcastPeopleCount();
+      }
+
+      // Stop heartbeat if no clients
+      if (this.clients.size === 0) {
+        this.stopHeartbeat();
+      }
+    }, ChatRoom.HEARTBEAT_INTERVAL);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -41,55 +130,11 @@ export class ChatRoom {
     });
   }
 
-  // Heartbeat interval handle
-  heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  // Track last pong time per WebSocket (timestamp in ms)
-  lastPong: Map<WebSocket, number> = new Map();
-
-  // Heartbeat interval (ms)
-  HEARTBEAT_INTERVAL = 30_000; // 30s
-  // Timeout after which a client is considered dead (ms)
-  HEARTBEAT_TIMEOUT = 60_000; // 60s
-
-  startHeartbeat() {
-    if (this.heartbeatTimer) return;
-
-    this.heartbeatTimer = setInterval(() => {
-      const now = Date.now();
-
-      // Check for dead clients
-      for (const [ws, lastPongTime] of this.lastPong.entries()) {
-        if (now - lastPongTime > this.HEARTBEAT_TIMEOUT) {
-          // Client hasn't responded in time, close the connection
-          try {
-            ws.close(1000, "Heartbeat timeout");
-          } catch {
-            // Already closed
-          }
-          // Clean up will happen in the 'close' event handler
-        }
-      }
-
-      // Send ping to all connected clients
-      this.broadcast({ type: "ping" });
-    }, this.HEARTBEAT_INTERVAL);
-  }
-
-  stopHeartbeat() {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-  }
-
   handleSocket(ws: WebSocket) {
     ws.accept();
 
-    // Initialize last pong time for this client
+    // Initialize last pong time to now
     this.lastPong.set(ws, Date.now());
-
-    // Start heartbeat if not already running
-    this.startHeartbeat();
 
     ws.addEventListener("message", (msg: MessageEvent) => {
       let data: any;
@@ -99,8 +144,8 @@ export class ChatRoom {
         return;
       }
 
+      // Handle pong response from client
       if (data.type === "pong") {
-        // Update last pong time for this client
         this.lastPong.set(ws, Date.now());
         return;
       }
@@ -108,26 +153,40 @@ export class ChatRoom {
       if (data.type === "join") {
         const nickname = data.nickname || "Anonymous";
         this.clients.set(ws, nickname);
+        this.lastPong.set(ws, Date.now());
         this.broadcastPeopleCount();
-        this.broadcast({
+
+        // Send message history to the joining user
+        const history = this.getRecentHistory();
+        if (history.length > 0) {
+          ws.send(JSON.stringify({
+            type: "history",
+            messages: history,
+          }));
+        }
+
+        const joinMsg = {
           type: "system",
           text: `${nickname} joined the room`,
-        });
+        };
+        this.broadcast(joinMsg);
+        this.addToHistory(joinMsg);
+
+        // Start heartbeat when first client joins
+        this.startHeartbeat();
       } else if (data.type === "message") {
         const nickname = this.clients.get(ws) || "Anonymous";
-        this.broadcast(
-          {
-            type: "chat",
-            nickname,
-            text: data.text,
-          },
-          ws
-        );
+        const chatMsg = {
+          type: "chat",
+          nickname,
+          text: data.text,
+          timestamp: Date.now(),
+        };
+        this.broadcast(chatMsg, ws);
+        this.addToHistory(chatMsg);
         ws.send(
           JSON.stringify({
-            type: "chat",
-            nickname,
-            text: data.text,
+            ...chatMsg,
             self: true,
           })
         );
@@ -142,8 +201,10 @@ export class ChatRoom {
           fileSize: data.fileSize,
           width: data.width,
           height: data.height,
+          timestamp: Date.now(),
         };
         this.broadcast(imageData, ws);
+        this.addToHistory(imageData);
         ws.send(JSON.stringify({ ...imageData, self: true }));
       } else if (data.type === "file") {
         const nickname = this.clients.get(ws) || "Anonymous";
@@ -154,8 +215,10 @@ export class ChatRoom {
           fileName: data.fileName,
           fileSize: data.fileSize,
           mimeType: data.mimeType,
+          timestamp: Date.now(),
         };
         this.broadcast(fileData, ws);
+        this.addToHistory(fileData);
         ws.send(JSON.stringify({ ...fileData, self: true }));
       }
     });
@@ -164,13 +227,15 @@ export class ChatRoom {
       const nickname = this.clients.get(ws) || "Anonymous";
       this.clients.delete(ws);
       this.lastPong.delete(ws);
-      this.broadcast({
+      const leaveMsg = {
         type: "system",
         text: `${nickname} left the room`,
-      });
+      };
+      this.broadcast(leaveMsg);
+      this.addToHistory(leaveMsg);
       this.broadcastPeopleCount();
 
-      // Stop heartbeat if no more clients
+      // Stop heartbeat if no clients left
       if (this.clients.size === 0) {
         this.stopHeartbeat();
       }
@@ -734,7 +799,12 @@ function getFrontendHTML(): string {
 
   <script>
     const wsUrl = window.location.origin.replace(/^http/, 'ws') + '?room=global';
-    const ws = new WebSocket(wsUrl);
+    let ws = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10;
+    const reconnectDelay = 2000; // 2 seconds
+    let currentNickname = null;
+
     const messagesEl = document.getElementById('messages');
     const inputEl = document.getElementById('input');
     const sendBtn = document.getElementById('sendBtn');
@@ -886,7 +956,7 @@ function getFrontendHTML(): string {
       inputArea.addEventListener('blur', () => setTimeout(fixMobileLayout, 100));
     }
 
-    inputEl.placeholder = isMobile ? '输入消息... (点击 Send 发送)' : '输入消息... (Enter 发送，Shift+Enter 换行)';
+    inputEl.placeholder = isMobile ? '输入消息... (点Send发送)' : 'Enter 发送，Shift+Enter 换行';
 
     let currentMaxFileSize = 50 * 1024 * 1024;
     fetch('/api/settings')
@@ -916,22 +986,47 @@ function getFrontendHTML(): string {
       }
     });
 
-    ws.onopen = () => {
-      statusEl.textContent = 'Connected';
-    };
+    function createWebSocket() {
+      ws = new WebSocket(wsUrl);
 
-    ws.onclose = () => {
-      statusEl.textContent = 'Disconnected. Reconnecting...';
-      inputEl.disabled = true;
-      sendBtn.disabled = true;
-      setTimeout(() => location.reload(), 3000);
-    };
+      ws.onopen = () => {
+        statusEl.textContent = 'Connected';
+        reconnectAttempts = 0;
 
-    ws.onerror = () => {
-      statusEl.textContent = 'Connection error';
-    };
+        // If we were already joined, rejoin automatically
+        if (currentNickname && joined) {
+          ws.send(JSON.stringify({ type: 'join', nickname: currentNickname }));
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
+        }
+      };
 
-    ws.onmessage = (event) => {
+      ws.onclose = () => {
+        statusEl.textContent = 'Disconnected. Reconnecting...';
+        inputEl.disabled = true;
+        sendBtn.disabled = true;
+
+        // Auto-reconnect with exponential backoff
+        if (reconnectAttempts < maxReconnectAttempts) {
+          const delay = reconnectDelay * Math.pow(1.5, reconnectAttempts);
+          reconnectAttempts++;
+          setTimeout(() => {
+            statusEl.textContent = 'Reconnecting... (' + reconnectAttempts + '/' + maxReconnectAttempts + ')';
+            createWebSocket();
+          }, delay);
+        } else {
+          statusEl.textContent = 'Connection failed. Please refresh the page.';
+        }
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = 'Connection error';
+      };
+
+      ws.onmessage = handleMessage;
+    }
+
+    function handleMessage(event) {
       let data;
       try {
         data = JSON.parse(event.data);
@@ -939,9 +1034,31 @@ function getFrontendHTML(): string {
         return;
       }
 
+      // Respond to server ping with pong (heartbeat)
       if (data.type === 'ping') {
-        // Respond to heartbeat ping
         ws.send(JSON.stringify({ type: 'pong' }));
+        return;
+      }
+
+      // Handle message history on rejoin
+      if (data.type === 'history') {
+        // Add a separator for history messages
+        const separator = document.createElement('div');
+        separator.className = 'message system';
+        separator.textContent = '--- Recent messages ---';
+        messagesEl.appendChild(separator);
+
+        // Render each history message
+        for (const msg of data.messages) {
+          renderMessage(msg, true);
+        }
+
+        const endSeparator = document.createElement('div');
+        endSeparator.className = 'message system';
+        endSeparator.textContent = '--- End of history ---';
+        messagesEl.appendChild(endSeparator);
+
+        messagesEl.scrollTop = messagesEl.scrollHeight;
         return;
       }
 
@@ -983,12 +1100,51 @@ function getFrontendHTML(): string {
         messagesEl.appendChild(msg);
         messagesEl.scrollTop = messagesEl.scrollHeight;
       } else if (data.type === 'file') {
+        renderMessage(data, false);
+      }
+    }
+
+    // Render a single message (used for both live and history messages)
+    function renderMessage(data, isHistory) {
+      if (data.type === 'system') {
+        const msg = document.createElement('div');
+        msg.className = 'message system';
+        msg.textContent = data.text;
+        messagesEl.appendChild(msg);
+        if (!isHistory && !data.self) notifyNewMessage(null, data.text);
+      } else if (data.type === 'chat') {
+        const msg = document.createElement('div');
+        if (data.self) {
+          msg.className = 'message self';
+          msg.textContent = data.text;
+        } else {
+          msg.className = 'message other';
+          msg.innerHTML = '<div class="nickname">' + escapeHtml(data.nickname) + '</div>' + escapeHtml(data.text);
+          if (!isHistory) notifyNewMessage(data.nickname, data.text);
+        }
+        messagesEl.appendChild(msg);
+      } else if (data.type === 'image') {
         const msg = document.createElement('div');
         if (data.self) {
           msg.className = 'message self';
         } else {
           msg.className = 'message other';
-          notifyNewMessage(data.nickname, '[File] ' + (data.fileName || ''));
+          if (!isHistory) notifyNewMessage(data.nickname, '[Image] ' + (data.fileName || ''));
+        }
+        const fileSizeStr = formatFileSize(data.fileSize);
+        msg.innerHTML = (data.self ? '' : '<div class="nickname">' + escapeHtml(data.nickname) + '</div>') +
+          '<div class="image-attachment" onclick="openImageViewer(\\'' + data.imageId.replace(/'/g, '') + '\\')">' +
+          '<img class="image-thumb" src="/image/' + data.imageId + '" alt="image" />' +
+          '<div class="file-info-text">🖼️ ' + escapeHtml(data.fileName || 'Image') + '<br/>' + fileSizeStr + '</div>' +
+          '</div>';
+        messagesEl.appendChild(msg);
+      } else if (data.type === 'file') {
+        const msg = document.createElement('div');
+        if (data.self) {
+          msg.className = 'message self';
+        } else {
+          msg.className = 'message other';
+          if (!isHistory) notifyNewMessage(data.nickname, '[File] ' + (data.fileName || ''));
         }
         const fileSizeStr = formatFileSize(data.fileSize);
         msg.innerHTML = (data.self ? '' : '<div class="nickname">' + escapeHtml(data.nickname) + '</div>') +
@@ -997,9 +1153,12 @@ function getFrontendHTML(): string {
           '<div class="file-info-text"><span class="file-name">' + escapeHtml(data.fileName) + '</span><br/>' + fileSizeStr + '</div>' +
           '</div>';
         messagesEl.appendChild(msg);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
       }
-    };
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // Initialize WebSocket connection
+    createWebSocket();
 
     function escapeHtml(text) {
       const div = document.createElement('div');
@@ -1019,21 +1178,29 @@ function getFrontendHTML(): string {
     function joinChat(nickname) {
       nicknameOverlay.style.display = 'none';
       joined = true;
+      currentNickname = nickname;
       localStorage.setItem('chat_nickname', nickname);
-      if (ws.readyState === WebSocket.OPEN) {
+
+      // Clear previous messages when joining fresh
+      messagesEl.innerHTML = '';
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'join', nickname }));
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        inputEl.focus();
       } else {
         // Wait for WebSocket to open before sending
         const checkOpen = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
             clearInterval(checkOpen);
             ws.send(JSON.stringify({ type: 'join', nickname }));
+            inputEl.disabled = false;
+            sendBtn.disabled = false;
+            inputEl.focus();
           }
         }, 50);
       }
-      inputEl.disabled = false;
-      sendBtn.disabled = false;
-      inputEl.focus();
     }
 
     function handleJoinClick() {
