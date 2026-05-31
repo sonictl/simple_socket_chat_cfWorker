@@ -41,14 +41,67 @@ export class ChatRoom {
     });
   }
 
+  // Heartbeat interval handle
+  heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Track last pong time per WebSocket (timestamp in ms)
+  lastPong: Map<WebSocket, number> = new Map();
+
+  // Heartbeat interval (ms)
+  HEARTBEAT_INTERVAL = 30_000; // 30s
+  // Timeout after which a client is considered dead (ms)
+  HEARTBEAT_TIMEOUT = 60_000; // 60s
+
+  startHeartbeat() {
+    if (this.heartbeatTimer) return;
+
+    this.heartbeatTimer = setInterval(() => {
+      const now = Date.now();
+
+      // Check for dead clients
+      for (const [ws, lastPongTime] of this.lastPong.entries()) {
+        if (now - lastPongTime > this.HEARTBEAT_TIMEOUT) {
+          // Client hasn't responded in time, close the connection
+          try {
+            ws.close(1000, "Heartbeat timeout");
+          } catch {
+            // Already closed
+          }
+          // Clean up will happen in the 'close' event handler
+        }
+      }
+
+      // Send ping to all connected clients
+      this.broadcast({ type: "ping" });
+    }, this.HEARTBEAT_INTERVAL);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   handleSocket(ws: WebSocket) {
     ws.accept();
+
+    // Initialize last pong time for this client
+    this.lastPong.set(ws, Date.now());
+
+    // Start heartbeat if not already running
+    this.startHeartbeat();
 
     ws.addEventListener("message", (msg: MessageEvent) => {
       let data: any;
       try {
         data = JSON.parse(msg.data);
       } catch {
+        return;
+      }
+
+      if (data.type === "pong") {
+        // Update last pong time for this client
+        this.lastPong.set(ws, Date.now());
         return;
       }
 
@@ -110,11 +163,17 @@ export class ChatRoom {
     ws.addEventListener("close", () => {
       const nickname = this.clients.get(ws) || "Anonymous";
       this.clients.delete(ws);
+      this.lastPong.delete(ws);
       this.broadcast({
         type: "system",
         text: `${nickname} left the room`,
       });
       this.broadcastPeopleCount();
+
+      // Stop heartbeat if no more clients
+      if (this.clients.size === 0) {
+        this.stopHeartbeat();
+      }
     });
   }
 }
@@ -877,6 +936,12 @@ function getFrontendHTML(): string {
       try {
         data = JSON.parse(event.data);
       } catch {
+        return;
+      }
+
+      if (data.type === 'ping') {
+        // Respond to heartbeat ping
+        ws.send(JSON.stringify({ type: 'pong' }));
         return;
       }
 
