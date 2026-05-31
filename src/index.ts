@@ -171,6 +171,65 @@ export default {
       headers: { "Content-Type": "text/html;charset=UTF-8" },
     });
   },
+
+  // Cron trigger: clean up expired files every 6 hours
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    const now = Date.now();
+    const maxAge = fileTTL * 1000; // Convert seconds to ms
+    let deletedCount = 0;
+    let errorCount = 0;
+
+    try {
+      // List all objects in the bucket with pagination
+      let cursor: string | undefined;
+      let hasMore = true;
+
+      while (hasMore) {
+        const listOptions: R2ListOptions = {
+          limit: 1000,
+        };
+        if (cursor) {
+          listOptions.cursor = cursor;
+        }
+
+        const listResult = await env.CHAT_FILES.list(listOptions);
+
+        for (const object of listResult.objects) {
+          try {
+            // Check if the object has an uploadedAt timestamp
+            const head = await env.CHAT_FILES.head(object.key);
+            if (head?.customMetadata?.uploadedAt) {
+              const uploadedAt = parseInt(head.customMetadata.uploadedAt, 10);
+              if (!isNaN(uploadedAt) && (now - uploadedAt) > maxAge) {
+                // File is expired, delete it
+                await env.CHAT_FILES.delete(object.key);
+                deletedCount++;
+              }
+            } else if (head?.uploaded) {
+              // Fallback: use the R2 object's uploaded timestamp
+              const uploadedAt = head.uploaded.getTime();
+              if ((now - uploadedAt) > maxAge) {
+                await env.CHAT_FILES.delete(object.key);
+                deletedCount++;
+              }
+            }
+          } catch {
+            errorCount++;
+          }
+        }
+
+        if (listResult.truncated) {
+          cursor = listResult.cursor;
+        } else {
+          hasMore = false;
+        }
+      }
+    } catch (err) {
+      console.error('Cleanup cron error:', err);
+    }
+
+    console.log(`Cleanup complete: deleted ${deletedCount} expired files, ${errorCount} errors`);
+  },
 };
 
 function handleAdminRoute(request: Request, url: URL, env: Env): Response {
@@ -271,6 +330,8 @@ async function handleFileUpload(request: Request, env: Env): Promise<Response> {
     const arrayBuffer = await file.arrayBuffer();
 
     // Store in R2 with custom metadata and TTL
+    // Use expiresIn for automatic deletion after fileTTL seconds
+    // Note: expiresIn is supported at runtime by Cloudflare R2
     await env.CHAT_FILES.put(fileId, arrayBuffer, {
       httpMetadata: {
         contentType: file.type || "application/octet-stream",
@@ -279,9 +340,9 @@ async function handleFileUpload(request: Request, env: Env): Promise<Response> {
       customMetadata: {
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
+        uploadedAt: Date.now().toString(),
       },
-      // @ts-ignore - expirationTtl is valid at runtime
-      expirationTtl: fileTTL,
+      expiresIn: fileTTL,
     } as any);
 
     return new Response(

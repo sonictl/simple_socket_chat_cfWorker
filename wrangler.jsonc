@@ -21,5 +21,8 @@
       "binding": "CHAT_FILES",
       "bucket_name": "chat-files"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  }
 }
